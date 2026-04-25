@@ -63,24 +63,6 @@ const TTS_PCM_FRAME_SIZE = TTS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZ
 const OPUS_PCM_FRAME_SAMPLES = 960; // 20ms @ 48kHz
 const OPUS_PCM_FRAME_SIZE = OPUS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
 
-function isExpectedAbortError(error) {
-  return Boolean(
-    error?.name === "AbortError" ||
-      error?.code === "ABORT_ERR" ||
-      error?.code === "ERR_CANCELED" ||
-      error?.__CANCEL__ === true ||
-      /cancell?ed|abort/i.test(String(error?.message || ""))
-  );
-}
-
-function summarizeError(error) {
-  return {
-    name: error?.name,
-    code: error?.code,
-    message: error?.message
-  };
-}
-
 function createOpusEncoder() {
   try {
     const { OpusEncoder } = require("@discordjs/opus");
@@ -167,7 +149,6 @@ function createTTSHandler(options = {}) {
   /** @type {Map<string, { accumulated: string, emittedChars: number, queue: Promise<void>, encoder: any, generation: number, activeRequestController: AbortController | null }>} */
   const sessions = new Map();
 
-  // ✅ FIX 3: filler cache key now includes voice name to prevent stale cached audio
   /** @type {Map<string, Buffer[]>} */
   const fillerCache = new Map();
 
@@ -200,11 +181,7 @@ function createTTSHandler(options = {}) {
         await task();
       })
       .catch((error) => {
-        if (isExpectedAbortError(error)) {
-          console.log(`[TTS ${sessionId}] queued work canceled (expected during interruption).`);
-          return;
-        }
-        console.error(`[TTS ${sessionId}] queued work failed:`, summarizeError(error));
+        console.error(`[TTS ${sessionId}] queued work failed:`, error);
       });
     return session.queue;
   }
@@ -342,13 +319,13 @@ function createTTSHandler(options = {}) {
 
   async function warmFillerCache() {
     for (const phrase of FILLER_PHRASES) {
-      const cacheKey = getFillerCacheKey(phrase); // ✅ voice-aware cache key
+      const cacheKey = getFillerCacheKey(phrase);
       if (fillerCache.has(cacheKey)) {
         continue;
       }
       try {
         const frames = await synthesizeToOpusFrames("filler-cache", phrase);
-        fillerCache.set(cacheKey, frames); // ✅ store with voice-aware key
+        fillerCache.set(cacheKey, frames);
       } catch (error) {
         console.warn(`Failed to pre-synthesize filler phrase "${phrase}":`, error);
       }
@@ -384,14 +361,14 @@ function createTTSHandler(options = {}) {
 
   function enqueuePhrase(sessionId, phrase) {
     return queueWork(sessionId, async () => {
-      const cacheKey = getFillerCacheKey(phrase); // ✅ voice-aware cache key
+      const cacheKey = getFillerCacheKey(phrase);
       const cachedFrames = fillerCache.get(cacheKey);
       if (cachedFrames) {
         await sendFrames(sessionId, cachedFrames);
         return;
       }
       const frames = await synthesizeToOpusFrames(sessionId, phrase);
-      fillerCache.set(cacheKey, frames); // ✅ store with voice-aware key
+      fillerCache.set(cacheKey, frames);
       await sendFrames(sessionId, frames);
     });
   }

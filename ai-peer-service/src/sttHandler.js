@@ -30,25 +30,6 @@ function createSTTHandler(options = {}) {
   const client = new OpenAI({
     apiKey: options.apiKey || process.env.OPENAI_API_KEY
   });
-  const requestTimeoutMs = Number(process.env.STT_REQUEST_TIMEOUT_MS || 18000);
-  const maxRetries = Math.max(0, Number(process.env.STT_MAX_RETRIES || 1));
-  const retryDelayMs = Number(process.env.STT_RETRY_DELAY_MS || 300);
-
-  function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function isRetryableSttError(error) {
-    const status = Number(error?.status ?? error?.response?.status);
-    if (status === 408 || status === 409 || status === 429) {
-      return true;
-    }
-    if (status >= 500 && status < 600) {
-      return true;
-    }
-    const code = String(error?.code || "");
-    return ["ECONNRESET", "ETIMEDOUT", "ENETUNREACH", "EAI_AGAIN"].includes(code);
-  }
 
   return {
     async transcribeChunk(audioBuffer) {
@@ -57,34 +38,13 @@ function createSTTHandler(options = {}) {
       }
 
       const wavBuffer = pcm16MonoToWavBuffer(audioBuffer, 16000);
-      let lastError = null;
-      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-        const file = await toFile(wavBuffer, "speech.wav", { type: "audio/wav" });
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
-        try {
-          const result = await client.audio.transcriptions.create(
-            {
-              file,
-              model: "whisper-1"
-            },
-            { signal: controller.signal }
-          );
-          clearTimeout(timeout);
-          return (result?.text || "").trim();
-        } catch (error) {
-          clearTimeout(timeout);
-          lastError = error;
-          const isAbort = error?.name === "AbortError" || error?.code === "ABORT_ERR";
-          const canRetry = attempt < maxRetries && (isAbort || isRetryableSttError(error));
-          if (!canRetry) {
-            break;
-          }
-          await wait(retryDelayMs * (attempt + 1));
-        }
-      }
+      const file = await toFile(wavBuffer, "speech.wav", { type: "audio/wav" });
+      const result = await client.audio.transcriptions.create({
+        file,
+        model: "whisper-1"
+      });
 
-      throw lastError;
+      return (result?.text || "").trim();
     }
   };
 }

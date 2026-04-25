@@ -18,18 +18,8 @@ function createVADHandler(options = {}) {
   let pending = Buffer.alloc(0);
   let processingChain = Promise.resolve();
   let initialized = false;
-  let isSpeechActive = false;
-  let lastSpeechStartTs = 0;
-  let lastSpeechEndTs = 0;
-  const duplicateGuardMs = Number(process.env.VAD_DUPLICATE_EVENT_GUARD_MS || 120);
 
   detector.on("speechStart", (startTs) => {
-    const nowMs = Number(startTs) || Date.now();
-    if (isSpeechActive || nowMs - lastSpeechStartTs <= duplicateGuardMs) {
-      return;
-    }
-    isSpeechActive = true;
-    lastSpeechStartTs = nowMs;
     console.log(`[VAD] speechStart at ${new Date(startTs).toISOString()}`);
     if (typeof options.onSpeechStart === "function") {
       options.onSpeechStart(startTs);
@@ -37,12 +27,6 @@ function createVADHandler(options = {}) {
   });
 
   detector.on("speechEnd", ({ duration }) => {
-    const nowMs = Date.now();
-    if (!isSpeechActive || nowMs - lastSpeechEndTs <= duplicateGuardMs) {
-      return;
-    }
-    isSpeechActive = false;
-    lastSpeechEndTs = nowMs;
     console.log(`[VAD] speechEnd after ${duration}ms`);
     if (typeof options.onSpeechEnd === "function") {
       options.onSpeechEnd({ duration });
