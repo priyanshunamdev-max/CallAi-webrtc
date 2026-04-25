@@ -18,6 +18,7 @@ function createSignalingClient({ serverUrl, aiUserId }) {
       }
     });
   });
+  console.log("Signaling connected:", socket.id);
 
   socket.on("disconnect", (reason) => {
     console.log("Signaling disconnected:", reason);
