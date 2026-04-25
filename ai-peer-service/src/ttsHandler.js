@@ -62,6 +62,8 @@ const TTS_PCM_FRAME_SAMPLES = 480; // 20ms @ 24kHz
 const TTS_PCM_FRAME_SIZE = TTS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
 const OPUS_PCM_FRAME_SAMPLES = 960; // 20ms @ 48kHz
 const OPUS_PCM_FRAME_SIZE = OPUS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
+const TTS_WARM_FILLER_CACHE_ON_BOOT = process.env.TTS_WARM_FILLER_CACHE_ON_BOOT === "true";
+const TTS_WARM_FILLER_GAP_MS = Math.max(0, Number(process.env.TTS_WARM_FILLER_GAP_MS || 800));
 
 function createOpusEncoder() {
   try {
@@ -327,7 +329,16 @@ function createTTSHandler(options = {}) {
         const frames = await synthesizeToOpusFrames("filler-cache", phrase);
         fillerCache.set(cacheKey, frames);
       } catch (error) {
-        console.warn(`Failed to pre-synthesize filler phrase "${phrase}":`, error);
+        const status = Number(error?.status ?? error?.response?.status);
+        if (status === 429) {
+          console.warn(`[TTS] Skipping filler warmup for "${phrase}" due to 429 (rate-limited).`);
+          break;
+        }
+        console.warn(`Failed to pre-synthesize filler phrase "${phrase}":`, error?.message || error);
+      }
+
+      if (TTS_WARM_FILLER_GAP_MS > 0) {
+        await new Promise((resolve) => setTimeout(resolve, TTS_WARM_FILLER_GAP_MS));
       }
     }
   }
@@ -373,7 +384,9 @@ function createTTSHandler(options = {}) {
     });
   }
 
-  void warmFillerCache();
+  if (TTS_WARM_FILLER_CACHE_ON_BOOT) {
+    void warmFillerCache();
+  }
 
   async function drainSession(sessionId = "default") {
     return queueWork(sessionId, async () => {});
