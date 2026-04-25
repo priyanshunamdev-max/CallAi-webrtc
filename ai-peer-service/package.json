@@ -1,0 +1,22 @@
+{
+  "name": "ai-peer-service",
+  "version": "1.0.0",
+  "description": "AI peer service for signaling, WebRTC, VAD, STT, LLM, and TTS.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "latest",
+    "axios": "latest",
+    "dotenv": "latest",
+    "fluent-ffmpeg": "latest",
+    "opusscript": "latest",
+    "openai": "latest",
+    "realtime-vad": "latest",
+    "socket.io-client": "latest",
+    "wav": "latest",
+    "werift": "latest"
+  }
+}
