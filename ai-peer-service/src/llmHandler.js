@@ -1,291 +1,106 @@
-// const OpenAI = require("openai");
-
-// function createLLMHandler(options = {}) {
-//   const client = new OpenAI({
-//     apiKey: process.env.OPENAI_API_KEY
-//   });
-//   const systemInstruction =
-//     "You are a helpful voice assistant. Always respond in English only, regardless of the user's language. Keep responses concise, natural, and usually under 2 sentences unless asked for detail.";
-//   const sessions = new Map();
-//   /** @type {Map<string, { controller: AbortController, interrupted: boolean }>} */
-//   const activeStreams = new Map();
-
-//   function getSessionHistory(sessionId = "default") {
-//     if (!sessions.has(sessionId)) {
-//       sessions.set(sessionId, []);
-//     }
-//     return sessions.get(sessionId);
-//   }
-
-//   function appendMessage(sessionId, role, content) {
-//     const history = getSessionHistory(sessionId);
-//     history.push({ role, content });
-//   }
-
-//   async function streamAssistantResponse(sessionId = "default", ttsHandler) {
-//     const history = getSessionHistory(sessionId);
-//     if (history.length === 0) {
-//       return "";
-//     }
-
-//     const controller = new AbortController();
-//     activeStreams.set(sessionId, { controller, interrupted: false });
-//     let assistantText = "";
-//     let ttsBuffer = "";
-//     let logBuffer = "";
-//     let flushTimer = null;
-//     let assistantSpeakStarted = false;
-
-//     async function flushTtsBufferAsync() {
-//       if (!ttsBuffer?.trim()) {
-//         ttsBuffer = "";
-//         return;
-//       }
-//       const chunk = ttsBuffer;
-//       ttsBuffer = "";
-//       if (!ttsHandler?.synthesizeStream) {
-//         return;
-//       }
-//       if (!assistantSpeakStarted && typeof options.onAssistantSpeakStart === "function") {
-//         assistantSpeakStarted = true;
-//         options.onAssistantSpeakStart(sessionId);
-//       }
-//       await ttsHandler.synthesizeStream(sessionId, chunk);
-//     }
-
-//     function flushLogBuffer() {
-//       if (!logBuffer) {
-//         return;
-//       }
-//       const chunk = logBuffer;
-//       logBuffer = "";
-//       console.log(`[LLM ${sessionId}] ${chunk}`);
-//     }
-
-//     function scheduleIdleFlush() {
-//       if (flushTimer) {
-//         clearTimeout(flushTimer);
-//       }
-//       flushTimer = setTimeout(() => {
-//         flushTimer = null;
-//         void flushTtsBufferAsync().catch((error) => {
-//           console.error("TTS idle flush failed:", error);
-//         });
-//       }, 220);
-//     }
-
-//     let wasInterrupted = false;
-
-//     try {
-//       try {
-//         const stream = await client.chat.completions.create({
-//           model: "gpt-4o-mini",
-//           messages: [{ role: "system", content: systemInstruction }, ...history],
-//           stream: true
-//         }, { signal: controller.signal });
-
-//         for await (const chunk of stream) {
-//           const delta = chunk?.choices?.[0]?.delta?.content;
-//           if (!delta) {
-//             continue;
-//           }
-
-//           assistantText += delta;
-//           logBuffer += delta;
-//           if (logBuffer.length >= 160) {
-//             flushLogBuffer();
-//           }
-
-//           ttsBuffer += delta;
-//           const reachedSentenceBoundary = /[.!?]\s*$|\n$/.test(ttsBuffer);
-//           const reachedSoftBoundary = /[,;:]\s*$/.test(ttsBuffer);
-//           const reachedChunkSize = ttsBuffer.length >= 140;
-//           if (reachedSentenceBoundary || reachedChunkSize || (reachedSoftBoundary && ttsBuffer.length >= 40)) {
-//             if (flushTimer) {
-//               clearTimeout(flushTimer);
-//               flushTimer = null;
-//             }
-//             await flushTtsBufferAsync();
-//           } else {
-//             scheduleIdleFlush();
-//           }
-//         }
-//         if (flushTimer) {
-//           clearTimeout(flushTimer);
-//           flushTimer = null;
-//         }
-//         await flushTtsBufferAsync();
-//         flushLogBuffer();
-//       } catch (error) {
-//         if (flushTimer) {
-//           clearTimeout(flushTimer);
-//           flushTimer = null;
-//         }
-//         const isAbort =
-//           error?.name === "AbortError" || error?.code === "ABORT_ERR" || /abort/i.test(String(error?.message || ""));
-//         if (!isAbort) {
-//           throw error;
-//         }
-//       }
-
-//       const streamState = activeStreams.get(sessionId);
-//       activeStreams.delete(sessionId);
-//       wasInterrupted = Boolean(streamState?.interrupted);
-
-//       try {
-//         if (ttsHandler?.drainSession) {
-//           await ttsHandler.drainSession(sessionId);
-//         }
-//         if (!wasInterrupted && ttsHandler?.flushSession) {
-//           await ttsHandler.flushSession(sessionId);
-//         }
-//         if (ttsHandler?.drainSession) {
-//           await ttsHandler.drainSession(sessionId);
-//         }
-//       } catch (error) {
-//         console.error("TTS drain/flush failed:", error);
-//       }
-
-//       if (!wasInterrupted && assistantText.trim()) {
-//         appendMessage(sessionId, "assistant", assistantText);
-//       }
-
-//       return assistantText;
-//     } finally {
-//       if (activeStreams.has(sessionId)) {
-//         const streamState = activeStreams.get(sessionId);
-//         wasInterrupted = wasInterrupted || Boolean(streamState?.interrupted);
-//         activeStreams.delete(sessionId);
-//       }
-//       if (assistantSpeakStarted && typeof options.onAssistantSpeakEnd === "function") {
-//         options.onAssistantSpeakEnd(sessionId);
-//       }
-//     }
-//   }
-
-//   return {
-//     async handleFinalTranscript(sessionId = "default", transcript = "", ttsHandler) {
-//       const normalized = transcript.trim();
-//       if (!normalized) {
-//         return "";
-//       }
-
-//       appendMessage(sessionId, "user", normalized);
-//       if (typeof options.onThinkingStart === "function") {
-//         options.onThinkingStart(sessionId);
-//       }
-//       try {
-//         return await streamAssistantResponse(sessionId, ttsHandler);
-//       } finally {
-//         if (typeof options.onThinkingEnd === "function") {
-//           options.onThinkingEnd(sessionId);
-//         }
-//       }
-//     },
-//     async handleInterruptionTranscript(sessionId = "default", transcript = "", ttsHandler) {
-//       const normalized = transcript.trim();
-//       if (!normalized) {
-//         return "";
-//       }
-
-//       const history = getSessionHistory(sessionId);
-//       if (history.length > 0 && history[history.length - 1].role === "assistant") {
-//         history.pop();
-//       }
-//       appendMessage(sessionId, "user", normalized);
-//       if (typeof options.onThinkingStart === "function") {
-//         options.onThinkingStart(sessionId);
-//       }
-//       try {
-//         return await streamAssistantResponse(sessionId, ttsHandler);
-//       } finally {
-//         if (typeof options.onThinkingEnd === "function") {
-//           options.onThinkingEnd(sessionId);
-//         }
-//       }
-//     },
-//     abortSession(sessionId = "default") {
-//       const active = activeStreams.get(sessionId);
-//       if (!active) {
-//         return;
-//       }
-//       active.interrupted = true;
-//       active.controller.abort();
-//     },
-//     getHistory(sessionId = "default") {
-//       return [...getSessionHistory(sessionId)];
-//     },
-//     clearHistory(sessionId = "default") {
-//       sessions.delete(sessionId);
-//     }
-//   };
-// }
-
-// module.exports = { createLLMHandler };
-
-
 const OpenAI = require("openai");
+
+const DEFAULT_SYSTEM_PROMPT =
+  "You are a helpful voice assistant. Understand and respond in English only. If the user speaks another language, politely ask them to continue in English. Keep responses short, clear, and conversational unless the user asks for detail.";
+const DEFAULT_BOOTSTRAP_USER_PROMPT =
+  "Start the call with a short friendly greeting in English and ask how you can help.";
+const MAX_CONTEXT_MESSAGES = Number(process.env.LLM_MAX_CONTEXT_MESSAGES || 20);
+const KEEP_PARTIAL_ASSISTANT_ON_INTERRUPT =
+  process.env.KEEP_PARTIAL_ASSISTANT_ON_INTERRUPT !== "false";
 
 function createLLMHandler(options = {}) {
   const client = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
   });
-  const systemInstruction =
-    "You are a helpful voice assistant. Always respond in English only, regardless of the user's language. Keep responses concise, natural, and usually under 2 sentences unless asked for detail.";
+
+  const systemPrompt = options.systemPrompt || process.env.AI_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT;
+  const baseUserPrompt = options.userPrompt || process.env.AI_USER_PROMPT || "";
+  const startupUserPrompt = options.startupUserPrompt || process.env.AI_STARTUP_USER_PROMPT || DEFAULT_BOOTSTRAP_USER_PROMPT;
+  const model = options.model || process.env.LLM_MODEL || "gpt-4o-mini";
+
+  /** @type {Map<string, { context: Array<{ role: "user" | "assistant", content: string }> }>} */
   const sessions = new Map();
   /** @type {Map<string, { controller: AbortController, interrupted: boolean }>} */
   const activeStreams = new Map();
 
-  function getSessionHistory(sessionId = "default") {
+  function getSession(sessionId = "default") {
     if (!sessions.has(sessionId)) {
-      sessions.set(sessionId, []);
+      sessions.set(sessionId, { context: [] });
     }
     return sessions.get(sessionId);
   }
 
-  function appendMessage(sessionId, role, content) {
-    const history = getSessionHistory(sessionId);
-    history.push({ role, content });
+  function addToContext(sessionId, role, content) {
+    const normalized = String(content || "").trim();
+    if (!normalized) {
+      return;
+    }
+    const session = getSession(sessionId);
+    session.context.push({ role, content: normalized });
+    if (session.context.length > MAX_CONTEXT_MESSAGES) {
+      session.context.splice(0, session.context.length - MAX_CONTEXT_MESSAGES);
+    }
   }
 
-  async function streamAssistantResponse(sessionId = "default", ttsHandler) {
-    const history = getSessionHistory(sessionId);
-    if (history.length === 0) {
+  function normalizeInterruptedAssistantText(text) {
+    const cleaned = String(text || "").trim();
+    if (!cleaned) {
       return "";
     }
+    if (/[.!?]$/.test(cleaned)) {
+      return `${cleaned} [interrupted]`;
+    }
+    return `${cleaned}... [interrupted]`;
+  }
 
+  function buildMessages(sessionId, extraUserMessage = "") {
+    const session = getSession(sessionId);
+    /** @type {Array<{ role: "system" | "user" | "assistant", content: string }>} */
+    const messages = [{ role: "system", content: systemPrompt }];
+
+    if (baseUserPrompt.trim()) {
+      messages.push({ role: "user", content: baseUserPrompt.trim() });
+    }
+    messages.push(...session.context);
+    if (extraUserMessage.trim()) {
+      messages.push({ role: "user", content: extraUserMessage.trim() });
+    }
+
+    return messages;
+  }
+
+  async function streamAssistantResponse(sessionId = "default", ttsHandler, turnId = 0, extraUserMessage = "") {
+    const messages = buildMessages(sessionId, extraUserMessage);
     const controller = new AbortController();
     activeStreams.set(sessionId, { controller, interrupted: false });
+
     let assistantText = "";
     let ttsBuffer = "";
-    let logBuffer = "";
     let flushTimer = null;
     let assistantSpeakStarted = false;
+    let wasInterrupted = false;
 
-    async function flushTtsBufferAsync() {
-      if (!ttsBuffer?.trim()) {
+    function isInterrupted() {
+      const state = activeStreams.get(sessionId);
+      return Boolean(state?.interrupted || controller.signal.aborted);
+    }
+
+    async function flushTtsBuffer() {
+      if (isInterrupted()) {
+        ttsBuffer = "";
+        return;
+      }
+      if (!ttsBuffer.trim() || !ttsHandler?.synthesizeStream) {
         ttsBuffer = "";
         return;
       }
       const chunk = ttsBuffer;
       ttsBuffer = "";
-      if (!ttsHandler?.synthesizeStream) {
-        return;
-      }
       if (!assistantSpeakStarted && typeof options.onAssistantSpeakStart === "function") {
         assistantSpeakStarted = true;
-        options.onAssistantSpeakStart(sessionId);
+        options.onAssistantSpeakStart(sessionId, turnId);
       }
       await ttsHandler.synthesizeStream(sessionId, chunk);
-    }
-
-    function flushLogBuffer() {
-      if (!logBuffer) {
-        return;
-      }
-      const chunk = logBuffer;
-      logBuffer = "";
-      console.log(`[LLM ${sessionId}] ${chunk}`);
     }
 
     function scheduleIdleFlush() {
@@ -294,57 +109,56 @@ function createLLMHandler(options = {}) {
       }
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        void flushTtsBufferAsync().catch((error) => {
-          console.error("TTS idle flush failed:", error);
+        void flushTtsBuffer().catch((error) => {
+          console.error("TTS flush failed:", error);
         });
       }, 120);
     }
-
-    let wasInterrupted = false;
 
     try {
       try {
         const stream = await client.chat.completions.create(
           {
-            model: "gpt-4o-mini",
-            messages: [{ role: "system", content: systemInstruction }, ...history],
+            model,
+            messages,
             stream: true
           },
           { signal: controller.signal }
         );
 
         for await (const chunk of stream) {
+          if (isInterrupted()) {
+            break;
+          }
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (!delta) {
             continue;
           }
 
           assistantText += delta;
-          logBuffer += delta;
-          if (logBuffer.length >= 160) {
-            flushLogBuffer();
-          }
-
           ttsBuffer += delta;
-          const reachedSentenceBoundary = /[.!?]\s*$|\n$/.test(ttsBuffer);
-          const reachedSoftBoundary = /[,;:]\s*$/.test(ttsBuffer);
-          const reachedChunkSize = ttsBuffer.length >= 80;
-          if (reachedSentenceBoundary || reachedChunkSize || (reachedSoftBoundary && ttsBuffer.length >= 24)) {
+
+          const boundary = /[.!?]\s*$|\n$/.test(ttsBuffer) || ttsBuffer.length >= 80;
+          if (boundary) {
             if (flushTimer) {
               clearTimeout(flushTimer);
               flushTimer = null;
             }
-            await flushTtsBufferAsync();
+            await flushTtsBuffer();
           } else {
             scheduleIdleFlush();
           }
         }
+
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
         }
-        await flushTtsBufferAsync();
-        flushLogBuffer();
+        if (!isInterrupted()) {
+          await flushTtsBuffer();
+        } else {
+          ttsBuffer = "";
+        }
       } catch (error) {
         if (flushTimer) {
           clearTimeout(flushTimer);
@@ -359,79 +173,75 @@ function createLLMHandler(options = {}) {
         }
       }
 
-      const streamState = activeStreams.get(sessionId);
+      const state = activeStreams.get(sessionId);
       activeStreams.delete(sessionId);
-      wasInterrupted = Boolean(streamState?.interrupted);
+      wasInterrupted = Boolean(state?.interrupted);
 
-      try {
-        if (ttsHandler?.drainSession) {
-          await ttsHandler.drainSession(sessionId);
-        }
-        if (!wasInterrupted && ttsHandler?.flushSession) {
-          await ttsHandler.flushSession(sessionId);
-        }
-        if (ttsHandler?.drainSession) {
-          await ttsHandler.drainSession(sessionId);
-        }
-      } catch (error) {
-        console.error("TTS drain/flush failed:", error);
+      if (ttsHandler?.drainSession) {
+        await ttsHandler.drainSession(sessionId);
+      }
+      if (!wasInterrupted && ttsHandler?.flushSession) {
+        await ttsHandler.flushSession(sessionId);
+      }
+      if (ttsHandler?.drainSession) {
+        await ttsHandler.drainSession(sessionId);
       }
 
-      if (!wasInterrupted && assistantText.trim()) {
-        appendMessage(sessionId, "assistant", assistantText);
+      const finalAssistantText = assistantText.trim();
+      if (finalAssistantText) {
+        if (wasInterrupted && KEEP_PARTIAL_ASSISTANT_ON_INTERRUPT) {
+          addToContext(sessionId, "assistant", normalizeInterruptedAssistantText(finalAssistantText));
+        } else if (!wasInterrupted) {
+          addToContext(sessionId, "assistant", finalAssistantText);
+        }
       }
 
       return assistantText;
     } finally {
       if (activeStreams.has(sessionId)) {
-        const streamState = activeStreams.get(sessionId);
-        wasInterrupted = wasInterrupted || Boolean(streamState?.interrupted);
+        const state = activeStreams.get(sessionId);
+        wasInterrupted = wasInterrupted || Boolean(state?.interrupted);
         activeStreams.delete(sessionId);
       }
       if (assistantSpeakStarted && typeof options.onAssistantSpeakEnd === "function") {
-        options.onAssistantSpeakEnd(sessionId);
+        options.onAssistantSpeakEnd(sessionId, { turnId, interrupted: wasInterrupted });
+      }
+    }
+  }
+
+  async function runTurn(sessionId, transcript, ttsHandler, turnId) {
+    const normalized = String(transcript || "").trim();
+    if (!normalized) {
+      return "";
+    }
+    addToContext(sessionId, "user", normalized);
+    if (typeof options.onThinkingStart === "function") {
+      options.onThinkingStart(sessionId, turnId);
+    }
+    try {
+      return await streamAssistantResponse(sessionId, ttsHandler, turnId);
+    } finally {
+      if (typeof options.onThinkingEnd === "function") {
+        options.onThinkingEnd(sessionId, turnId);
       }
     }
   }
 
   return {
-    async handleFinalTranscript(sessionId = "default", transcript = "", ttsHandler) {
-      const normalized = transcript.trim();
-      if (!normalized) {
-        return "";
-      }
-      appendMessage(sessionId, "user", normalized);
+    async startConversation(sessionId = "default", ttsHandler, turnId = 0) {
       if (typeof options.onThinkingStart === "function") {
-        options.onThinkingStart(sessionId);
+        options.onThinkingStart(sessionId, turnId);
       }
       try {
-        return await streamAssistantResponse(sessionId, ttsHandler);
+        return await streamAssistantResponse(sessionId, ttsHandler, turnId, startupUserPrompt);
       } finally {
         if (typeof options.onThinkingEnd === "function") {
-          options.onThinkingEnd(sessionId);
+          options.onThinkingEnd(sessionId, turnId);
         }
       }
     },
-    async handleInterruptionTranscript(sessionId = "default", transcript = "", ttsHandler) {
-      const normalized = transcript.trim();
-      if (!normalized) {
-        return "";
-      }
-      const history = getSessionHistory(sessionId);
-      if (history.length > 0 && history[history.length - 1].role === "assistant") {
-        history.pop();
-      }
-      appendMessage(sessionId, "user", normalized);
-      if (typeof options.onThinkingStart === "function") {
-        options.onThinkingStart(sessionId);
-      }
-      try {
-        return await streamAssistantResponse(sessionId, ttsHandler);
-      } finally {
-        if (typeof options.onThinkingEnd === "function") {
-          options.onThinkingEnd(sessionId);
-        }
-      }
+    async handleUserTranscript(sessionId = "default", transcript = "", ttsHandler, turnId = 0) {
+      return runTurn(sessionId, transcript, ttsHandler, turnId);
     },
     abortSession(sessionId = "default") {
       const active = activeStreams.get(sessionId);
@@ -441,10 +251,11 @@ function createLLMHandler(options = {}) {
       active.interrupted = true;
       active.controller.abort();
     },
-    getHistory(sessionId = "default") {
-      return [...getSessionHistory(sessionId)];
+    getContext(sessionId = "default") {
+      const session = getSession(sessionId);
+      return [...session.context];
     },
-    clearHistory(sessionId = "default") {
+    clearContext(sessionId = "default") {
       sessions.delete(sessionId);
     }
   };

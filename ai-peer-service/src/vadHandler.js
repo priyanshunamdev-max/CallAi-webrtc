@@ -3,14 +3,14 @@ const { VoiceActivityDetector } = require("realtime-vad");
 
 function createVADHandler(options = {}) {
   const speechThreshold = Number(process.env.VAD_SPEECH_THRESHOLD || 0.42);
-  const silenceDebounceMs = Number(process.env.VAD_SILENCE_DEBOUNCE_MS || 180);
+  const silenceDebounceMs = Number(process.env.VAD_SILENCE_DEBOUNCE_MS || 220);
   const detector = new VoiceActivityDetector({
     sampleRate: 16000,
     channels: 1,
     bitsPerSample: 16,
     frameDurationMs: 30,
     speechThreshold: Number.isFinite(speechThreshold) ? speechThreshold : 0.42,
-    silenceDebounceMs: Number.isFinite(silenceDebounceMs) ? silenceDebounceMs : 180
+    silenceDebounceMs: Number.isFinite(silenceDebounceMs) ? silenceDebounceMs : 220
   });
 
   const pcmStream = new PassThrough();

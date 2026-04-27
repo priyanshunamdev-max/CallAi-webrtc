@@ -32,14 +32,8 @@ function normalizeTtsVoice(raw) {
   return v;
 }
 
-function normalizeTtsModel(raw) {
-  const m = String(raw ?? "tts-1")
-    .trim()
-    .toLowerCase();
-  if (m === "tts-1") {
-    return m;
-  }
-  console.warn(`[TTS] Unknown model "${raw}". Using "tts-1".`);
+// Only "tts-1" model is supported; normalization is trivial.
+function normalizeTtsModel(_) {
   return "tts-1";
 }
 
@@ -52,6 +46,7 @@ function normalizeTtsSpeed(raw) {
 }
 
 const FILLER_PHRASES = ["Let me think...", "I'm not sure."];
+const WARM_FILLER_ON_START = process.env.TTS_WARM_FILLER_ON_START === "true";
 const SENTENCE_BOUNDARY = /[.!?]\s*$|\n$/;
 const PHRASE_BOUNDARY = /[.!?,;:]\s*$|\n$/;
 const TTS_PCM_SAMPLE_RATE = 24000;
@@ -62,6 +57,13 @@ const TTS_PCM_FRAME_SAMPLES = 480; // 20ms @ 24kHz
 const TTS_PCM_FRAME_SIZE = TTS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
 const OPUS_PCM_FRAME_SAMPLES = 960; // 20ms @ 48kHz
 const OPUS_PCM_FRAME_SIZE = OPUS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
+
+function sanitizeForEnglishSpeech(text) {
+  return String(text || "")
+    .replace(/[^\x20-\x7E\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function createOpusEncoder() {
   try {
@@ -181,9 +183,22 @@ function createTTSHandler(options = {}) {
         await task();
       })
       .catch((error) => {
-        console.error(`[TTS ${sessionId}] queued work failed:`, error);
+        const isCanceled =
+          error?.code === "ERR_CANCELED" ||
+          error?.name === "CanceledError" ||
+          /cancel/i.test(String(error?.message || ""));
+        if (isCanceled) {
+          console.log(`[TTS ${sessionId}] synthesis canceled (barge-in).`);
+          return;
+        }
+        console.error(`[TTS ${sessionId}] queued work failed: ${error?.message || String(error)}`);
       });
     return session.queue;
+  }
+
+  function isSessionGenerationCurrent(sessionId, expectedGeneration) {
+    const session = getSession(sessionId);
+    return session.generation === expectedGeneration;
   }
 
   function sentenceReady(text) {
@@ -220,7 +235,8 @@ function createTTSHandler(options = {}) {
   }
 
   async function synthesizeToOpusFrames(sessionId, text, signal, onFrame) {
-    if (!apiKey || !text?.trim()) {
+    const sanitizedText = sanitizeForEnglishSpeech(text);
+    if (!apiKey || !sanitizedText) {
       return [];
     }
 
@@ -228,7 +244,7 @@ function createTTSHandler(options = {}) {
       "https://api.openai.com/v1/audio/speech",
       {
         model,
-        input: text,
+        input: sanitizedText,
         voice,   
         response_format: "pcm",
         speed
@@ -299,20 +315,26 @@ function createTTSHandler(options = {}) {
     return frames;
   }
 
-  async function synthesizeAndPushFrames(sessionId, text, signal) {
+  async function synthesizeAndPushFrames(sessionId, text, signal, expectedGeneration) {
     if (!text?.trim()) {
       return;
     }
     await synthesizeToOpusFrames(sessionId, text, signal, (opusFrame) => {
+      if (!isSessionGenerationCurrent(sessionId, expectedGeneration)) {
+        return;
+      }
       pushOpusFrame(opusFrame, sessionId);
     });
   }
 
-  async function sendFrames(sessionId, frames) {
+  async function sendFrames(sessionId, frames, expectedGeneration) {
     if (!frames || frames.length === 0) {
       return;
     }
     for (const frame of frames) {
+      if (!isSessionGenerationCurrent(sessionId, expectedGeneration)) {
+        return;
+      }
       pushOpusFrame(frame, sessionId);
     }
   }
@@ -327,7 +349,9 @@ function createTTSHandler(options = {}) {
         const frames = await synthesizeToOpusFrames("filler-cache", phrase);
         fillerCache.set(cacheKey, frames);
       } catch (error) {
-        console.warn(`Failed to pre-synthesize filler phrase "${phrase}":`, error);
+        console.warn(
+          `Failed to pre-synthesize filler phrase "${phrase}": ${error?.message || String(error)}`
+        );
       }
     }
   }
@@ -347,7 +371,7 @@ function createTTSHandler(options = {}) {
     const controller = new AbortController();
     session.activeRequestController = controller;
     try {
-      await synthesizeAndPushFrames(sessionId, pending, controller.signal);
+      await synthesizeAndPushFrames(sessionId, pending, controller.signal, generationAtStart);
       if (generationAtStart !== session.generation) {
         return;
       }
@@ -361,19 +385,25 @@ function createTTSHandler(options = {}) {
 
   function enqueuePhrase(sessionId, phrase) {
     return queueWork(sessionId, async () => {
+      const session = getSession(sessionId);
+      const generationAtStart = session.generation;
       const cacheKey = getFillerCacheKey(phrase);
       const cachedFrames = fillerCache.get(cacheKey);
       if (cachedFrames) {
-        await sendFrames(sessionId, cachedFrames);
+        await sendFrames(sessionId, cachedFrames, generationAtStart);
         return;
       }
       const frames = await synthesizeToOpusFrames(sessionId, phrase);
       fillerCache.set(cacheKey, frames);
-      await sendFrames(sessionId, frames);
+      await sendFrames(sessionId, frames, generationAtStart);
     });
   }
 
-  void warmFillerCache();
+  if (WARM_FILLER_ON_START) {
+    void warmFillerCache();
+  } else {
+    console.log("[TTS] Startup filler warmup disabled (set TTS_WARM_FILLER_ON_START=true to enable).");
+  }
 
   async function drainSession(sessionId = "default") {
     return queueWork(sessionId, async () => {});
@@ -405,7 +435,7 @@ function createTTSHandler(options = {}) {
         const generationAtStart = session.generation;
         const controller = new AbortController();
         session.activeRequestController = controller;
-        await synthesizeAndPushFrames(sessionId, pending, controller.signal);
+        await synthesizeAndPushFrames(sessionId, pending, controller.signal, generationAtStart);
         if (session.activeRequestController === controller) {
           session.activeRequestController = null;
         }
