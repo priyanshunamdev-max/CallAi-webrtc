@@ -57,6 +57,8 @@ const TTS_PCM_FRAME_SAMPLES = 480; // 20ms @ 24kHz
 const TTS_PCM_FRAME_SIZE = TTS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
 const OPUS_PCM_FRAME_SAMPLES = 960; // 20ms @ 48kHz
 const OPUS_PCM_FRAME_SIZE = OPUS_PCM_FRAME_SAMPLES * PCM_CHANNELS * PCM_SAMPLE_SIZE_BYTES;
+const TTS_WARM_FILLER_CACHE_ON_BOOT = process.env.TTS_WARM_FILLER_CACHE_ON_BOOT === "true";
+const TTS_WARM_FILLER_GAP_MS = Math.max(0, Number(process.env.TTS_WARM_FILLER_GAP_MS || 800));
 
 function sanitizeForEnglishSpeech(text) {
   return String(text || "")
@@ -349,9 +351,22 @@ function createTTSHandler(options = {}) {
         const frames = await synthesizeToOpusFrames("filler-cache", phrase);
         fillerCache.set(cacheKey, frames);
       } catch (error) {
+<<<<<<< HEAD
         console.warn(
           `Failed to pre-synthesize filler phrase "${phrase}": ${error?.message || String(error)}`
         );
+=======
+        const status = Number(error?.status ?? error?.response?.status);
+        if (status === 429) {
+          console.warn(`[TTS] Skipping filler warmup for "${phrase}" due to 429 (rate-limited).`);
+          break;
+        }
+        console.warn(`Failed to pre-synthesize filler phrase "${phrase}":`, error?.message || error);
+      }
+
+      if (TTS_WARM_FILLER_GAP_MS > 0) {
+        await new Promise((resolve) => setTimeout(resolve, TTS_WARM_FILLER_GAP_MS));
+>>>>>>> 9c510425ab628bbf0eccd2248cad2244a6737e87
       }
     }
   }
@@ -399,10 +414,15 @@ function createTTSHandler(options = {}) {
     });
   }
 
+<<<<<<< HEAD
   if (WARM_FILLER_ON_START) {
     void warmFillerCache();
   } else {
     console.log("[TTS] Startup filler warmup disabled (set TTS_WARM_FILLER_ON_START=true to enable).");
+=======
+  if (TTS_WARM_FILLER_CACHE_ON_BOOT) {
+    void warmFillerCache();
+>>>>>>> 9c510425ab628bbf0eccd2248cad2244a6737e87
   }
 
   async function drainSession(sessionId = "default") {
